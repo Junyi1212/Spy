@@ -1,0 +1,295 @@
+
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no, width=device-width">
+    <title>MyJob</title>
+    <link rel="stylesheet" href="http://cache.amap.com/lbs/static/main1119.css" />
+    <link rel="stylesheet" href="http://cache.amap.com/lbs/static/jquery.range.css" />
+    <script src="http://cache.amap.com/lbs/static/jquery-1.9.1.js"></script>
+    <script src="http://cache.amap.com/lbs/static/es5.min.js"></script>
+    <script src="http://webapi.amap.com/maps?v=1.3&key=22d3816e107f199992666d6412fa0691&plugin=AMap.ArrivalRange,AMap.Scale,AMap.Geocoder,AMap.Transfer,AMap.Autocomplete"></script>
+    <script src="http://cache.amap.com/lbs/static/jquery.range.js"></script>
+    <style>
+    .control-panel {
+        position: absolute;
+        top: 30px;
+        right: 20px;
+    }
+    
+    .control-entry {
+        width: 280px;
+        background-color: rgba(119, 136, 153, 0.8);
+        font-family: fantasy, sans-serif;
+        text-align: left;
+        color: white;
+        overflow: auto;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+    
+    .control-input {
+        margin-left: 120px;
+    }
+    
+    .control-input input[type="text"] {
+        width: 160px;
+    }
+    
+    .control-panel label {
+        float: left;
+        width: 120px;
+    }
+    
+    #transfer-panel {
+        position: absolute;
+        background-color: white;
+        max-height: 80%;
+        overflow-y: auto;
+        top: 30px;
+        left: 20px;
+        width: 250px;
+    }
+    </style>
+</head>
+
+<body>
+    <div id="container"></div>
+    <div class="control-panel">
+        <div class="control-entry">
+            <label>选择地点：</label>
+            <div class="control-input">
+                <input id="work-location" type="text">
+            </div>
+        </div>
+        <div class="control-entry">
+            <label>交通方式：</label>
+            <div class="control-input">
+                <input type="radio" name="vehicle" value="SUBWAY,BUS" onClick="takeBus(this)" checked/> 公交+地铁
+                <input type="radio" name="vehicle" value="SUBWAY" onClick="takeSubway(this)" /> 地铁
+            </div>
+        </div>
+        <div class="control-entry">
+            <label>导入文件：</label>
+            <div class="control-input">
+                <input type="file" name="file" onChange="importJobInfo(this)" />
+            </div>
+        </div>
+    </div>
+    <div id="transfer-panel"></div>
+    <script>
+    var map = new AMap.Map("container", {
+        resizeEnable: true,//页面可调整大小
+        zoomEnable: true,//可缩放
+        center: [120.178339, 30.194099],//地图中心经纬度
+        zoom: 11//缩放等级
+    });
+
+	//添加标尺
+    var scale = new AMap.Scale();
+    map.addControl(scale);
+
+	//公交到达圈对象
+    var arrivalRange = new AMap.ArrivalRange();
+	//经度，纬度，时间（用不到），交通方式（默认地铁+公交）
+    var x, y, t, vehicle = "SUBWAY,BUS";
+	//现在工作地点，现在工作标记
+    var workAddress, workMarker;
+	//房源标记队列
+    var rentMarkerArray = [];
+	//多边形队列，存储公交到达的计算结果
+    var polygonArray = [];
+	//路径规划
+    var amapTransfer;
+
+	//信息窗体对象，在job标记时弹出
+    var infoWindow = new AMap.InfoWindow({
+        offset: new AMap.Pixel(0, -30)
+    });
+
+	//地址补全的使用
+    var auto = new AMap.Autocomplete({
+        input: "work-location"
+    });
+    
+    AMap.event.addListener(auto, "select", workLocationSelected);
+
+
+    function takeBus(radio) {
+        vehicle = radio.value;
+        loadWorkLocation()
+    }
+
+    function takeSubway(radio) {
+        vehicle = radio.value;
+        loadWorkLocation()
+    }
+
+	//载入文件
+    function importJobInfo(fileInfo) {
+        var file = fileInfo.files[0].name;
+        loadJobLocationByFile(file);
+    }
+
+    function workLocationSelected(e) {
+		//更新现在工作地点，加载公交到达圈
+        workAddress = e.poi.name;
+        loadWorkLocation();
+    }
+
+    function loadWorkMarker(x, y, locationName) {
+        workMarker = new AMap.Marker({
+            map: map,
+            title: locationName,
+            icon: 'http://webapi.amap.com/theme/v1.3/markers/n/mark_r.png',
+            position: [x, y]
+
+        });
+    }
+
+
+    function loadWorkRange(x, y, t, color, v) {
+        arrivalRange.search([x, y], t, function(status, result) {
+            if (result.bounds) {
+                for (var i = 0; i < result.bounds.length; i++) {
+					//新建多边形对象
+                    var polygon = new AMap.Polygon({
+                        map: map,
+                        fillColor: color,
+                        fillOpacity: "0.4",
+                        strokeColor: color,
+                        strokeOpacity: "0.8",
+                        strokeWeight: 1
+                    });
+					//得到到达圈的多边形路径
+                    polygon.setPath(result.bounds[i]);
+                    polygonArray.push(polygon);
+                }
+            }
+        }, {
+            policy: v
+        });
+    }
+
+    function addMarkerByAddress(detail) {
+        var geocoder = new AMap.Geocoder({
+            city: "杭州",
+            radius: 1000
+        });
+		
+        geocoder.getLocation(detail.address, function(status, result) {
+            if (status === "complete" && result.info === 'OK') {
+                var geocode = result.geocodes[0];
+                rentMarker = new AMap.Marker({
+                    map: map,
+                    title: detail.company,
+                    icon: 'http://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
+                    position: [geocode.location.getLng(), geocode.location.getLat()]
+                });
+                rentMarkerArray.push(rentMarker);
+
+                rentMarker.content = "<div>职位信息：<a target = '_blank' href='" + detail.link +"'>" + detail.company + "</a><div>"
+				
+                //在job标记被点击时打开
+				rentMarker.on('click', function(e) {
+					//鼠标移到标记上会显示标记content属性的内容
+					
+                    infoWindow.setContent(e.target.content);
+					
+					//在标记的位置打开窗体
+                    infoWindow.open(map, e.target.getPosition());
+					
+                    if (amapTransfer) amapTransfer.clear();
+                    amapTransfer = new AMap.Transfer({
+                        map: map,
+                        policy: AMap.TransferPolicy.LEAST_TIME,
+                        city: "杭州市",
+                        panel: 'transfer-panel'
+                    });
+					
+					amapTransfer.search(new AMap.LngLat(x,y), new AMap.LngLat(geocode.location.getLng(), geocode.location.getLat()));
+					/*
+                    amapTransfer.search([{
+                        keyword: workAddress
+                    }, {
+                        keyword: detail.address
+                    }], function(status, result) {})
+					*/
+                });
+            }
+        })
+    }
+
+    function delWorkLocation() {
+        if (polygonArray) map.remove(polygonArray);
+        if (workMarker) map.remove(workMarker);
+        polygonArray = [];
+    }
+
+    function delJobLocation() {
+        if (rentMarkerArray) map.remove(rentMarkerArray);
+        rentMarkerArray = [];
+    }
+
+    function loadWorkLocation() {
+		//首先清空地图上已有的到达圈
+        delWorkLocation();
+        var geocoder = new AMap.Geocoder({
+            city: "杭州",
+            radius: 1000
+        });
+
+        geocoder.getLocation(workAddress, function(status, result) {
+            if (status === "complete" && result.info === 'OK') {
+                var geocode = result.geocodes[0];
+                x = geocode.location.getLng();
+                y = geocode.location.getLat();
+				//加载现在工作地点标记
+                loadWorkMarker(x, y);
+				//加载60分钟内工作地点到达圈
+                loadWorkRange(x, y, 60, "#3f67a5", vehicle);
+				//地图移动到现在工作地点的位置
+                map.setZoomAndCenter(12, [x, y]);
+            }
+        })
+    }
+
+    function loadJobLocationByFile(fileName) {
+		//首先删除现有的Job标记
+        delJobLocation();
+		//所有的地点都记录在集合中
+        var rent_locations = new Set();
+		//jquery操作
+        $.get(fileName, function(data) {
+            data = data.split("\n");
+            data.forEach(function(item, index) {
+				var detail = new Object();
+				detail.company = item.split(",")[1];//公司名称
+				detail.address = item.split(",")[5];//详细地址
+				
+				if (detail.address === "") {
+					//有自己的网页,详细地址为空
+					if (detail.company === "新华三技术有限公司") {
+						//按公司名称（新华三技术有限公司）查找，高德地图查找错误，名称改为如下
+						detail.address = "新华三集团"
+					}
+					else {
+						detail.address = detail.company
+					}
+				}
+
+				detail.link = item.split(",")[6];//职位链接
+                rent_locations.add(detail);
+            });
+            rent_locations.forEach(function(detail, index) {
+				//加上Job标记
+                addMarkerByAddress(detail);
+            });
+        });
+    }
+    </script>
+</body>
+
+</html>
